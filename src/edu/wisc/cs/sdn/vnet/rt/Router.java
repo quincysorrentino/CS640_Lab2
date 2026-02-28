@@ -3,7 +3,6 @@ package edu.wisc.cs.sdn.vnet.rt;
 import edu.wisc.cs.sdn.vnet.Device;
 import edu.wisc.cs.sdn.vnet.DumpFile;
 import edu.wisc.cs.sdn.vnet.Iface;
-
 import net.floodlightcontroller.packet.Ethernet;
 
 /**
@@ -82,10 +81,56 @@ public class Router extends Device
 		System.out.println("*** -> Received packet: " +
 				etherPacket.toString().replace("\n", "\n\t"));
 		
-		/********************************************************************/
-		/* TODO: Handle packets                                             */
-		
-		
-		/********************************************************************/
+		if (etherPacket.getEtherType() == 0x0800){
+			net.floodlightcontroller.packet.IPv4 ipPacket = (net.floodlightcontroller.packet.IPv4) etherPacket.getPayload();
+
+			// Verify checksum
+			short originalChecksum = ipPacket.getChecksum();
+			ipPacket.resetChecksum();
+
+			byte[] serialized = ipPacket.serialize();
+			ipPacket.deserialize(serialized, 0, serialized.length);
+
+			if (ipPacket.getChecksum() != originalChecksum) {
+				// drop packet
+				return;
+			}
+			
+			// verify TTL
+			ipPacket.setTtl((byte)(ipPacket.getTtl() - 1));
+			if (ipPacket.getTtl() == 0) {
+				return;
+			}
+
+			// check the interface addressing
+			for (Iface iface : this.interfaces.values()){
+				if (ipPacket.getDestinationAddress() == iface.getIpAddress()){
+					return;
+				}
+			}
+
+			// look up next hop match 
+			RouteEntry match = this.routeTable.lookup(ipPacket.getDestinationAddress());
+			if (match == null){
+				return;
+			} 
+
+			int nextHopIp = match.getGatewayAddress();
+			if (nextHopIp == 0) {
+				nextHopIp = ipPacket.getDestinationAddress();
+			}
+			
+			ArpEntry arpEntry = this.arpCache.lookup(nextHopIp);
+			if (arpEntry == null){
+				return;
+			}
+
+			etherPacket.setDestinationMACAddress(arpEntry.getMac().toBytes());
+			etherPacket.setSourceMACAddress(match.getInterface().getMacAddress().toBytes());
+
+			ipPacket.resetChecksum();
+
+			this.sendPacket(etherPacket, match.getInterface());
+		}
 	}
 }
